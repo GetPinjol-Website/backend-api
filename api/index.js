@@ -35,7 +35,7 @@ const loadAssets = async () => {
         console.log("🚀 Memuat aset dari file JSON...");
 
         // Path disesuaikan jika diperlukan. Saat ini diasumsikan model_assets ada di root.
-        const assetsPath = path.join(__dirname, '..', 'model_assets'); // Sesuaikan path jika model_assets tidak di root
+        const assetsPath = path.join(__dirname, 'model_assets'); // Sesuaikan path jika model_assets tidak di root
 
         const [
             legalitasData,
