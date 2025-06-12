@@ -68,7 +68,7 @@ async function analyzeApp(appName, predictor) {
         reviewData = await gplay.default.reviews({
             appId: appInfo.appId,
             sort: gplay.default.sort.NEWEST,
-            num: 500,
+            num: 100,
             lang: 'id',
             country: 'id'
         });
