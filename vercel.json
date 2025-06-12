@@ -1,13 +1,14 @@
 {
-  "builds": [
-    {
-      "src": "api/index.js",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": [
-          "assets/**"
-        ]
-      }
-    }
-  ]
+    "builds": [
+        {
+            "src": "api/index.js",
+            "use": "@vercel/node",
+            "config": {
+                "includeFiles": [
+                    "model_assets/**",
+                    "public/**"
+                ]
+            }
+        }
+    ]
 }
