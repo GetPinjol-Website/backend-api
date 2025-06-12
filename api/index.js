@@ -6,16 +6,23 @@ const Hapi = require('@hapi/hapi');
 const fs = require('fs').promises; // Gunakan fs.promises untuk baca file async
 const path = require('path');
 
-// Impor fungsi dari file lokal
-const { preprocessText } = require('../preprocessing'); // Sesuaikan path
-const { vectorizeText } = require('../tfidf');         // Sesuaikan path
-const { SentimentPredictor } = require('../inference'); // Sesuaikan path
+// --- HAPUS BARIS REQUIRE UNTUK google-play-scraper DI SINI ---
+// const gplay = require('google-play-scraper').default;
+// const { NotFoundError } = require('google-play-scraper').default;
+// --- AKHIR BAGIAN HAPUS ---
+
+
+// Global object untuk menampung aset dan prediktor yang dimuat/diinisialisasi
+const assetsAndPredictor = {};
 
 // Variabel untuk menyimpan modul google-play-scraper setelah diimport dinamis
 let gplayModule = null;
 
-// Global object untuk menampung aset dan prediktor yang dimuat/diinisialisasi
-const assetsAndPredictor = {};
+// --- PERBAIKAN: DEKLARASI VARIABEL DI SINI ---
+// Variabel untuk menyimpan instance server Hapi setelah inisialisasi pertama
+let hapiServerInstance = null;
+// --- AKHIR PERBAIKAN ---
+
 
 /**
  * Memuat aset, mengimpor dependensi, dan menginisialisasi prediktor.
@@ -46,7 +53,12 @@ const initialize = async () => {
         gplayModule = await import('google-play-scraper');
         console.log("✅ Modul google-play-scraper berhasil diimpor dinamis.");
 
-        // Inisialisasi Prediktor
+        // Impor dan Inisialisasi Prediktor dari file lokal secara dinamis
+         // Mengasumsikan SentimentPredictor di-export dari '../inference.js'
+         // Karena inference.js mungkin juga CommonJS, kita require biasa.
+         // Jika inference.js itu sendiri ESM, Anda butuh import() dinamis juga di sini.
+        const { SentimentPredictor } = require('../inference'); // SESUAIKAN JIKA inference.js ADALAH ESM
+
         const predictor = new SentimentPredictor();
         await predictor.loadModel(); // Asumsikan loadModel ada di SentimentPredictor
         assetsAndPredictor.predictor = predictor;
@@ -187,7 +199,7 @@ async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDeveloper
 // Kita hanya mendefinisikan server dan routes, tidak menjalankannya dengan .start()
 const createServerForVercel = async () => {
     // Jika server sudah dibuat, gunakan instance yang ada
-     if (hapiServerInstance) {
+     if (hapiServerInstance) { // Variabel ini sekarang dikenali
          console.log("✅ Menggunakan instance server Hapi yang sudah ada (untuk Vercel).");
          return hapiServerInstance;
      }
@@ -233,10 +245,12 @@ const createServerForVercel = async () => {
                     assetsAndPredictor.sentimentMap
                 );
 
-                // Tangani error 404 dari analyzeApp
-                if (result.error) {
-                     return h.response({ error: result.error }).code(404);
-                }
+                // Tangani error 404 dari analyzeApp (jika analyzeApp mengembalikan objek { error: ... })
+                 // Perlu disesuaikan jika analyzeApp melempar error NotFoundError
+                // if (result.error) {
+                //      return h.response({ error: result.error }).code(404);
+                // }
+
 
                 return h.response(result).code(200);
 
@@ -254,7 +268,7 @@ const createServerForVercel = async () => {
     });
 
     // Simpan instance server untuk digunakan kembali
-     hapiServerInstance = server;
+     hapiServerInstance = server; // Variabel ini sekarang dikenali
 
     return server;
 };
