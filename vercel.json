@@ -1,14 +1,26 @@
 {
-    "builds": [
+      "rewrites": [
         {
-            "src": "api/index.js",
-            "use": "@vercel/node",
-            "config": {
-                "includeFiles": [
-                    "model_assets/**",
-                    "public/**"
-                ]
-            }
+          "source": "/api/(.*)",
+          "destination": "/api/"
         }
-    ]
-}
+      ],
+      "headers": [
+        {
+          "source": "/(.*)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "public, max-age=0, must-revalidate"
+            }
+          ]
+        }
+      ],
+      "functions": {
+         "api/index.js": {
+           "memory": 1024,
+           "maxDuration": 60
+         }
+      },
+      "outputDirectory": "public"
+    }
