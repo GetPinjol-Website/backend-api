@@ -229,7 +229,7 @@ const createServerForVercel = async () => {
     // Route untuk analisis di `/api/analisis`
     server.route({
         method: 'GET',
-        path: '/api/analisis', // Path relatif di dalam folder api (akan menjadi /api/analisis)
+        path: '/analisis', // Path relatif di dalam folder api (akan menjadi /api/analisis)
         handler: async (request, h) => {
             try {
                 const { app_name } = request.query;
