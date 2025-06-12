@@ -72,7 +72,6 @@ async function analyzeApp(appName, predictor) {
     
     let reviewData;
     try {
-        // PERBAIKAN 2: Ambil 500 ulasan
         reviewData = await gplay.default.reviews({
             appId: appInfo.appId,
             sort: gplay.default.sort.NEWEST,
@@ -134,7 +133,12 @@ const init = async () => {
     const server = Hapi.server({
         port: process.env.PORT || 3000, // Gunakan port dari environment, atau 3000 jika tidak ada
         host: '0.0.0.0', // Terima koneksi dari mana saja (penting untuk container)
-        routes: { cors: true }
+        routes: { 
+            cors: true,
+            files: {
+                relativeTo: path.join(__dirname, 'public')
+            }
+        }
     });
 
     await server.register(Inert);
@@ -145,9 +149,13 @@ const init = async () => {
 
     server.route({
         method: 'GET',
-        path: '/',
-        handler: (request, h) => {
-            return h.file(path.join(__dirname, 'public', 'index.html'));
+        path: '/{param*}', 
+        handler: {
+            directory: {
+                path: '.',      
+                redirectToSlash: true,
+                index: true,    
+            }
         }
     });
 
