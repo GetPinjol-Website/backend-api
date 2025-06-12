@@ -11,6 +11,12 @@ const path = require('path');
 // const { NotFoundError } = require('google-play-scraper').default;
 // --- AKHIR BAGIAN HAPUS ---
 
+// Impor fungsi dari file lokal
+// !!! SESUAIKAN PATH INI JIKA FILE preprocessing.js, tfidf.js, inference.js TIDAK DI ROOT !!!
+const { preprocessText } = require('../preprocessing');
+const { vectorizeText } = require('../tfidf');
+const { SentimentPredictor } = require('../inference');
+
 
 // Global object untuk menampung aset dan prediktor yang dimuat/diinisialisasi
 const assetsAndPredictor = {};
@@ -18,10 +24,8 @@ const assetsAndPredictor = {};
 // Variabel untuk menyimpan modul google-play-scraper setelah diimport dinamis
 let gplayModule = null;
 
-// --- PERBAIKAN: DEKLARASI VARIABEL DI SINI ---
 // Variabel untuk menyimpan instance server Hapi setelah inisialisasi pertama
 let hapiServerInstance = null;
-// --- AKHIR PERBAIKAN ---
 
 
 /**
@@ -38,7 +42,8 @@ const initialize = async () => {
 
     try {
         // Path disesuaikan jika diperlukan. Asumsi: api/index.js di folder api, model_assets di root.
-        const assetsPath = path.join(__dirname, '..', 'model_assets'); // Sesuaikan path
+        // !!! SESUAIKAN PATH INI JIKA model_assets TIDAK DI ROOT !!!
+        const assetsPath = path.join(__dirname, '..', 'model_assets');
 
         // Baca aset secara ASINKRON
         const legalitasDataRaw = await fs.readFile(path.join(assetsPath, 'legalitas_data.json'), 'utf8');
@@ -57,9 +62,9 @@ const initialize = async () => {
          // Mengasumsikan SentimentPredictor di-export dari '../inference.js'
          // Karena inference.js mungkin juga CommonJS, kita require biasa.
          // Jika inference.js itu sendiri ESM, Anda butuh import() dinamis juga di sini.
-        const { SentimentPredictor } = require('../inference'); // SESUAIKAN JIKA inference.js ADALAH ESM
+        const { SentimentPredictor: ImportedSentimentPredictor } = require('../inference'); // Rename untuk menghindari konflik nama
 
-        const predictor = new SentimentPredictor();
+        const predictor = new ImportedSentimentPredictor();
         await predictor.loadModel(); // Asumsikan loadModel ada di SentimentPredictor
         assetsAndPredictor.predictor = predictor;
         console.log("✅ Prediktor berhasil diinisialisasi.");
@@ -70,7 +75,7 @@ const initialize = async () => {
     }
 };
 
-// Pindahkan fungsi analyzeApp dan generateRecommendation dari server.js ke sini
+// Pindahkan fungsi generateRecommendation dari server.js ke sini
 function generateRecommendation(appData) {
     const { legal_status, perc_positif, perc_negatif, total_reviews } = appData;
 
@@ -101,7 +106,7 @@ function generateRecommendation(appData) {
 }
 
 
-// Fungsi analyzeApp diadaptasi
+// Fungsi analyzeApp dipindahkan dari server.js dan diadaptasi
 async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDevelopersSet, sentimentMap) {
     let appInfo;
     try {
@@ -199,7 +204,7 @@ async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDeveloper
 // Kita hanya mendefinisikan server dan routes, tidak menjalankannya dengan .start()
 const createServerForVercel = async () => {
     // Jika server sudah dibuat, gunakan instance yang ada
-     if (hapiServerInstance) { // Variabel ini sekarang dikenali
+     if (hapiServerInstance) {
          console.log("✅ Menggunakan instance server Hapi yang sudah ada (untuk Vercel).");
          return hapiServerInstance;
      }
@@ -208,19 +213,18 @@ const createServerForVercel = async () => {
     await initialize();
 
     const server = Hapi.server({
-        // Port dan host akan diatur oleh Vercel
+        // Port dan host akan diatur oleh Vercel, tidak terlalu relevan di sini
         port: process.env.PORT,
         host: process.env.HOST,
         routes: {
             cors: true, // Atur CORS sesuai kebutuhan Anda
-            // Tidak perlu konfigurasi files: relativeTo di sini, Vercel yang melayani statis
+             // Tidak perlu konfigurasi files: relativeTo di sini, Vercel yang melayani statis
+             // HAPI tidak akan melayani file statis di mode ini
         }
     });
 
-    // Tidak perlu server.register(Inert) di sini, Vercel yang melayani statis
-
-    // Hapus route untuk melayani file statis /param*
-    // server.route({ ... });
+    // TIDAK PERLU DAFTARKAN PLUGIN INERT
+    // TIDAK PERLU ROUTE UNTUK MELAYANI FILE STATIS '/'
 
     // Route untuk analisis di `/api/analisis`
     server.route({
@@ -245,12 +249,7 @@ const createServerForVercel = async () => {
                     assetsAndPredictor.sentimentMap
                 );
 
-                // Tangani error 404 dari analyzeApp (jika analyzeApp mengembalikan objek { error: ... })
-                 // Perlu disesuaikan jika analyzeApp melempar error NotFoundError
-                // if (result.error) {
-                //      return h.response({ error: result.error }).code(404);
-                // }
-
+                // analyzeApp sekarang melempar NotFoundError, jadi tidak perlu cek result.error di sini
 
                 return h.response(result).code(200);
 
@@ -268,24 +267,50 @@ const createServerForVercel = async () => {
     });
 
     // Simpan instance server untuk digunakan kembali
-     hapiServerInstance = server; // Variabel ini sekarang dikenali
+     hapiServerInstance = server;
 
     return server;
 };
 
 // --- Handler Utama untuk Vercel Serverless Function ---
-// Vercel akan memanggil fungsi ini
+// Vercel akan memanggil fungsi ini saat request ke /api/*
 module.exports = async (req, res) => {
     try {
         // Buat atau dapatkan instance server Hapi
         const server = await createServerForVercel();
 
-        // Gunakan listener server Hapi untuk menangani request Vercel
-        await server.listener(req, res);
+        // --- MENGGUNAKAN server.inject UNTUK MEMPROSES REQUEST ---
+        const response = await server.inject({
+            method: req.method,
+            url: req.url, // Gunakan URL lengkap dari request Vercel (misal: /api/analisis?app_name=...)
+            headers: req.headers,
+             // Payload hanya untuk metode yang memerlukannya (POST, PUT, dll)
+            payload: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined
+             // Note: req.body mungkin tidak langsung tersedia tergantung Vercel/middleware.
+             // Untuk GET request seperti /analisis, payload tidak perlu.
+        });
+
+        // Kirim response dari Hapi kembali ke response Vercel
+        res.statusCode = response.statusCode;
+        // Salin semua header dari respons Hapi
+        for (const key in response.headers) {
+            // Hindari menyalin header hop-by-hop (seperti connection, keep-alive)
+            if (!['connection', 'keep-alive', 'transfer-encoding'].includes(key.toLowerCase())) {
+                 res.setHeader(key, response.headers[key]);
+            }
+        }
+
+        // Kirim payload (body) respons
+        // Pastikan payload bukan null atau undefined sebelum mengirim
+        if (response.payload !== undefined && response.payload !== null) {
+             res.end(response.payload);
+        } else {
+             res.end();
+        }
 
     } catch (error) {
         console.error("Error in Vercel handler:", error);
-        // Kirim response error jika ada masalah di luar handler route
+        // Kirim response error jika ada masalah di luar handler route (misal: inisialisasi gagal)
         if (!res.headersSent) {
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json');

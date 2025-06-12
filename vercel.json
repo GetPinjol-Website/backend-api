@@ -1,26 +1,18 @@
 {
-      "rewrites": [
-        {
-          "source": "/api/(.*)",
-          "destination": "/api/"
-        }
-      ],
-      "headers": [
-        {
-          "source": "/(.*)",
-          "headers": [
-            {
-              "key": "Cache-Control",
-              "value": "public, max-age=0, must-revalidate"
-            }
-          ]
-        }
-      ],
-      "functions": {
-         "api/index.js": {
-           "memory": 1024,
-           "maxDuration": 60
-         }
-      },
-      "outputDirectory": "public"
+  "functions": {
+     "api/index.js": {
+       "memory": 1024,  
+       "maxDuration": 60 
+     }
+  },
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/public/$1"
     }
+  ]
+}
