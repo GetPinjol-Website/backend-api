@@ -1,81 +1,20 @@
-// api/index.js
-
-'use strict';
+// server.js (Final v7 - Perbaikan pencocokan legalitas & jumlah ulasan)
 
 const Hapi = require('@hapi/hapi');
-const fs = require('fs').promises; // Gunakan fs.promises untuk baca file async
+const Inert = require('@hapi/inert');
+const { preprocessText } = require('./preprocessing');
+const { vectorizeText } = require('./tfidf');
+const { SentimentPredictor } = require('./inference');
+const gplay = require('google-play-scraper');
+const fs = require('fs');
 const path = require('path');
 
-// --- HAPUS BARIS REQUIRE UNTUK google-play-scraper DI SINI ---
-// const gplay = require('google-play-scraper').default;
-// const { NotFoundError } = require('google-play-scraper').default;
-// --- AKHIR BAGIAN HAPUS ---
+const legalitasData = JSON.parse(fs.readFileSync(path.join(__dirname, 'model_assets', 'legalitas_data.json'), 'utf8'));
+const legalCompaniesSet = new Set(legalitasData.legal_companies);
+const ilegalDevelopersSet = new Set(legalitasData.ilegal_developers);
 
-// Impor fungsi dari file lokal
-// !!! SESUAIKAN PATH INI JIKA FILE preprocessing.js, tfidf.js, inference.js TIDAK DI ROOT !!!
-const { preprocessText } = require('../preprocessing');
-const { vectorizeText } = require('../tfidf');
-const { SentimentPredictor } = require('../inference');
+const sentimentMap = { 0: 'Negatif', 1: 'Netral', 2: 'Positif' };
 
-
-// Global object untuk menampung aset dan prediktor yang dimuat/diinisialisasi
-const assetsAndPredictor = {};
-
-// Variabel untuk menyimpan modul google-play-scraper setelah diimport dinamis
-let gplayModule = null;
-
-// Variabel untuk menyimpan instance server Hapi setelah inisialisasi pertama
-let hapiServerInstance = null;
-
-
-/**
- * Memuat aset, mengimpor dependensi, dan menginisialisasi prediktor.
- */
-const initialize = async () => {
-    // Jika sudah terinisialisasi, gunakan cache
-    if (assetsAndPredictor.legalCompaniesSet && assetsAndPredictor.predictor && gplayModule) {
-        console.log("✅ Aset, dependensi, dan prediktor sudah dimuat/inisialisasi. Menggunakan cache.");
-        return;
-    }
-
-    console.log("🚀 Memuat aset, mengimpor dependensi, dan menginisialisasi prediktor...");
-
-    try {
-        // Path disesuaikan jika diperlukan. Asumsi: api/index.js di folder api, model_assets di root.
-        // !!! SESUAIKAN PATH INI JIKA model_assets TIDAK DI ROOT !!!
-        const assetsPath = path.join(__dirname, '..', 'model_assets');
-
-        // Baca aset secara ASINKRON
-        const legalitasDataRaw = await fs.readFile(path.join(assetsPath, 'legalitas_data.json'), 'utf8');
-        const legalitasData = JSON.parse(legalitasDataRaw);
-        assetsAndPredictor.legalCompaniesSet = new Set(legalitasData.legal_companies);
-        assetsAndPredictor.ilegalDevelopersSet = new Set(legalitasData.ilegal_developers);
-        assetsAndPredictor.sentimentMap = { 0: 'Negatif', 1: 'Netral', 2: 'Positif' }; // Dipindahkan dari global scope server.js
-
-        console.log("✅ Aset berhasil dimuat.");
-
-        // IMPORT DINAMIS google-play-scraper
-        gplayModule = await import('google-play-scraper');
-        console.log("✅ Modul google-play-scraper berhasil diimpor dinamis.");
-
-        // Impor dan Inisialisasi Prediktor dari file lokal secara dinamis
-         // Mengasumsikan SentimentPredictor di-export dari '../inference.js'
-         // Karena inference.js mungkin juga CommonJS, kita require biasa.
-         // Jika inference.js itu sendiri ESM, Anda butuh import() dinamis juga di sini.
-        const { SentimentPredictor: ImportedSentimentPredictor } = require('../inference'); // Rename untuk menghindari konflik nama
-
-        const predictor = new ImportedSentimentPredictor();
-        await predictor.loadModel(); // Asumsikan loadModel ada di SentimentPredictor
-        assetsAndPredictor.predictor = predictor;
-        console.log("✅ Prediktor berhasil diinisialisasi.");
-
-    } catch (error) {
-        console.error("❌ Gagal menginisialisasi!", error);
-        throw new Error("Failed to initialize essential components: " + error.message);
-    }
-};
-
-// Pindahkan fungsi generateRecommendation dari server.js ke sini
 function generateRecommendation(appData) {
     const { legal_status, perc_positif, perc_negatif, total_reviews } = appData;
 
@@ -105,31 +44,24 @@ function generateRecommendation(appData) {
     return "Tidak Dapat Ditentukan";
 }
 
-
-// Fungsi analyzeApp dipindahkan dari server.js dan diadaptasi
-async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDevelopersSet, sentimentMap) {
+async function analyzeApp(appName, predictor) {
     let appInfo;
     try {
-        // Gunakan gplayModule yang sudah diimport dinamis
-        const searchResults = await gplayModule.default.search({ term: appName, num: 1, lang: 'id', country: 'id' });
+        const searchResults = await gplay.default.search({ term: appName, num: 1, lang: 'id', country: 'id' });
         if (!searchResults || searchResults.length === 0) {
-            // Gunakan NotFoundError dari gplayModule jika perlu
-            const { NotFoundError } = gplayModule.default;
-             throw new NotFoundError(`Aplikasi '${appName}' tidak ditemukan di Play Store.`); // Lempar error 404
+            return { error: `Aplikasi '${appName}' tidak ditemukan di Play Store.` };
         }
         appInfo = searchResults[0];
     } catch (e) {
-        // Tangani NotFoundError secara spesifik di catch handler route
-        console.error(`Gagal mencari aplikasi '${appName}':`, e.message);
-         // Lempar error untuk ditangani di handler route
-        throw e;
+        return { error: `Gagal mencari aplikasi: ${e.message}` };
     }
 
+    // PERBAIKAN 1: Hapus titik dan koma dari nama developer
     const developerNameClean = appInfo.developer
         .trim()
         .toLowerCase()
-        .replace(/[.,]/g, '')
-        .replace(/\s\s+/g, ' ');
+        .replace(/[.,]/g, '') // Menghapus . dan ,
+        .replace(/\s\s+/g, ' '); // Mengganti spasi ganda menjadi tunggal
 
     let legal_status = 'unknown';
     if (legalCompaniesSet.has(developerNameClean)) {
@@ -137,33 +69,30 @@ async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDeveloper
     } else if (ilegalDevelopersSet.has(developerNameClean)) {
         legal_status = 'ilegal';
     }
-
+    
     let reviewData;
     try {
-        // Gunakan gplayModule
-        reviewData = await gplayModule.default.reviews({
+        reviewData = await gplay.default.reviews({
             appId: appInfo.appId,
-            sort: gplayModule.default.sort.NEWEST, // Gunakan sort dari gplayModule
-            num: 100,
+            sort: gplay.default.sort.NEWEST,
+            num: 100, 
             lang: 'id',
             country: 'id'
         });
     } catch (e) {
-        console.error(`Gagal mengambil ulasan untuk ${appInfo.appId}:`, e.message);
-        reviewData = { data: [] }; // Lanjutkan meskipun gagal ambil ulasan
+        reviewData = { data: [] };
     }
 
     const reviewTexts = reviewData.data.map(r => r.text);
-
+    
     let sentimentCounts = { Negatif: 0, Netral: 0, Positif: 0 };
     let totalReviewsAnalyzed = 0;
-
+    
     if (reviewTexts.length > 0) {
         reviewTexts.forEach(review => {
             const processedText = preprocessText(review);
             if (processedText) {
                 const vector = vectorizeText(processedText);
-                 // Gunakan prediktor yang sudah diinisialisasi
                 const predictionIndex = predictor.predict(vector);
                 const sentiment = sentimentMap[predictionIndex];
                 sentimentCounts[sentiment]++;
@@ -199,122 +128,71 @@ async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDeveloper
     };
 }
 
-
-// --- Inisialisasi Server Hapi untuk Serverless ---
-// Kita hanya mendefinisikan server dan routes, tidak menjalankannya dengan .start()
-const createServerForVercel = async () => {
-    // Jika server sudah dibuat, gunakan instance yang ada
-     if (hapiServerInstance) {
-         console.log("✅ Menggunakan instance server Hapi yang sudah ada (untuk Vercel).");
-         return hapiServerInstance;
-     }
-
-    // Panggil fungsi inisialisasi komponen
-    await initialize();
-
+// --- Inisialisasi Server Hapi ---
+const init = async () => {
     const server = Hapi.server({
-        // Port dan host akan diatur oleh Vercel, tidak terlalu relevan di sini
-        port: process.env.PORT,
-        host: process.env.HOST,
-        routes: {
-            cors: true, // Atur CORS sesuai kebutuhan Anda
-             // Tidak perlu konfigurasi files: relativeTo di sini, Vercel yang melayani statis
-             // HAPI tidak akan melayani file statis di mode ini
+        port: process.env.PORT || 3000, // Gunakan port dari environment, atau 3000 jika tidak ada
+        host: '0.0.0.0', // Terima koneksi dari mana saja (penting untuk container)
+        routes: { 
+            cors: true,
+            files: {
+                relativeTo: path.join(__dirname, 'public')
+            }
         }
     });
 
-    // TIDAK PERLU DAFTARKAN PLUGIN INERT
-    // TIDAK PERLU ROUTE UNTUK MELAYANI FILE STATIS '/'
+    await server.register(Inert);
 
-    // Route untuk analisis di `/api/analisis`
+    const predictor = new SentimentPredictor();
+    await predictor.loadModel();
+
+
     server.route({
         method: 'GET',
-        path: '/analisis', // Path relatif di dalam folder api (akan menjadi /api/analisis)
+        path: '/{param*}', 
+        handler: {
+            directory: {
+                path: '.',      
+                redirectToSlash: true,
+                index: true,    
+            }
+        }
+    });
+
+    server.route({
+        method: 'GET',
+        path: '/analisis',
         handler: async (request, h) => {
             try {
                 const { app_name } = request.query;
 
                 if (!app_name || typeof app_name !== 'string') {
-                    return h.response({ error: 'Query parameter "app_name" dibutuhkan dan harus berupa string.' }).code(400);
+                    return h.response({ error: 'Query parameter "app_name" dibutuhkan.' }).code(400);
                 }
 
-                console.log(`🔍 Menganalisis aplikasi: "${app_name}"`);
+                console.log(`🔍 Menganalisis aplikasi dari URL: "${app_name}"`);
+                const result = await analyzeApp(app_name, predictor);
 
-                 // Panggil analyzeApp dengan komponen yang sudah diinisialisasi
-                const result = await analyzeApp(
-                    app_name,
-                    assetsAndPredictor.predictor,
-                    assetsAndPredictor.legalCompaniesSet,
-                    assetsAndPredictor.ilegalDevelopersSet,
-                    assetsAndPredictor.sentimentMap
-                );
-
-                // analyzeApp sekarang melempar NotFoundError, jadi tidak perlu cek result.error di sini
-
+                if (result.error) {
+                    return h.response({ error: result.error }).code(404);
+                }
+                
                 return h.response(result).code(200);
 
             } catch (error) {
-                console.error('Error during analysis handler:', error);
-                 // Tangani NotFoundError secara spesifik
-                 const { NotFoundError } = gplayModule.default;
-                 if (error instanceof NotFoundError) {
-                      return h.response({ error: error.message }).code(404); // Kirim pesan error dari NotFoundError
-                 }
-                 // Tangani error lain
+                console.error('Error during recommendation:', error);
                 return h.response({ error: 'An internal server error occurred.' }).code(500);
             }
         }
     });
 
-    // Simpan instance server untuk digunakan kembali
-     hapiServerInstance = server;
-
-    return server;
+    await server.start();
+    console.log('Server running on %s', server.info.uri);
 };
 
-// --- Handler Utama untuk Vercel Serverless Function ---
-// Vercel akan memanggil fungsi ini saat request ke /api/*
-module.exports = async (req, res) => {
-    try {
-        // Buat atau dapatkan instance server Hapi
-        const server = await createServerForVercel();
+process.on('unhandledRejection', (err) => {
+    console.log(err);
+    process.exit(1);
+});
 
-        // --- MENGGUNAKAN server.inject UNTUK MEMPROSES REQUEST ---
-        const response = await server.inject({
-            method: req.method,
-            url: req.url, // Gunakan URL lengkap dari request Vercel (misal: /api/analisis?app_name=...)
-            headers: req.headers,
-             // Payload hanya untuk metode yang memerlukannya (POST, PUT, dll)
-            payload: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined
-             // Note: req.body mungkin tidak langsung tersedia tergantung Vercel/middleware.
-             // Untuk GET request seperti /analisis, payload tidak perlu.
-        });
-
-        // Kirim response dari Hapi kembali ke response Vercel
-        res.statusCode = response.statusCode;
-        // Salin semua header dari respons Hapi
-        for (const key in response.headers) {
-            // Hindari menyalin header hop-by-hop (seperti connection, keep-alive)
-            if (!['connection', 'keep-alive', 'transfer-encoding'].includes(key.toLowerCase())) {
-                 res.setHeader(key, response.headers[key]);
-            }
-        }
-
-        // Kirim payload (body) respons
-        // Pastikan payload bukan null atau undefined sebelum mengirim
-        if (response.payload !== undefined && response.payload !== null) {
-             res.end(response.payload);
-        } else {
-             res.end();
-        }
-
-    } catch (error) {
-        console.error("Error in Vercel handler:", error);
-        // Kirim response error jika ada masalah di luar handler route (misal: inisialisasi gagal)
-        if (!res.headersSent) {
-            res.statusCode = 500;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ error: "Internal Server Error during function execution." }));
-        }
-    }
-};
+init();
