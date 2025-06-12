@@ -5,7 +5,7 @@ const Inert = require('@hapi/inert');
 const { preprocessText } = require('./preprocessing');
 const { vectorizeText } = require('./tfidf');
 const { SentimentPredictor } = require('./inference');
-const gplay = require('google-play-scraper');
+const gplay = await import('google-play-scraper');
 const fs = require('fs');
 const path = require('path');
 
@@ -47,6 +47,7 @@ function generateRecommendation(appData) {
 async function analyzeApp(appName, predictor) {
     let appInfo;
     try {
+        const gplay = await import('google-play-scraper');
         const searchResults = await gplay.default.search({ term: appName, num: 1, lang: 'id', country: 'id' });
         if (!searchResults || searchResults.length === 0) {
             return { error: `Aplikasi '${appName}' tidak ditemukan di Play Store.` };
