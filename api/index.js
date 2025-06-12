@@ -1,359 +1,281 @@
+// api/index.js
 
 'use strict';
 
 const Hapi = require('@hapi/hapi');
-const fs = require('fs').promises;
+const fs = require('fs').promises; // Gunakan fs.promises untuk baca file async
 const path = require('path');
 
-// --- PERBAIKAN IMPORT FINAL ---
-// Mengakses properti 'default' dari modul yang diimpor
-const gplay = require('google-play-scraper').default;
-const { NotFoundError } = require('google-play-scraper').default; // Asumsi NotFoundError juga ada di dalam default
+// Impor fungsi dari file lokal
+const { preprocessText } = require('../preprocessing'); // Sesuaikan path
+const { vectorizeText } = require('../tfidf');         // Sesuaikan path
+const { SentimentPredictor } = require('../inference'); // Sesuaikan path
 
-// Global object untuk menampung aset yang dimuat
-// Di lingkungan serverless, variabel global mungkin di-reset antar invocations,
-// tapi Vercel meng-cache instance function, jadi aset kemungkinan tetap di memori
-// setelah cold start pertama.
-const assets = {};
+// Variabel untuk menyimpan modul google-play-scraper setelah diimport dinamis
+let gplayModule = null;
+
+// Global object untuk menampung aset dan prediktor yang dimuat/diinisialisasi
+const assetsAndPredictor = {};
 
 /**
- * Memuat semua file aset (JSON) dari folder model_assets ke memori.
- * PATH PERLU DISESUAIKAN AGAR RELATIF TERHADAP LOKASI FILE INI (api/index.js).
- * Jika api/index.js ada di root dan model_assets ada di root, path-nya sudah benar.
- * Jika api/index.js ada di folder api, dan model_assets ada di root,
- * Anda mungkin perlu menggunakan path seperti '../model_assets'.
- * Asumsi saat ini api/index.js dan model_assets ada di root.
+ * Memuat aset, mengimpor dependensi, dan menginisialisasi prediktor.
  */
-const loadAssets = async () => {
-    // Jika aset sudah dimuat, tidak perlu memuat lagi (untuk re-use instance function)
-    if (Object.keys(assets).length > 0 && assets.legal_companies_set) {
-        console.log("✅ Aset sudah dimuat sebelumnya. Menggunakan cache.");
+const initialize = async () => {
+    // Jika sudah terinisialisasi, gunakan cache
+    if (assetsAndPredictor.legalCompaniesSet && assetsAndPredictor.predictor && gplayModule) {
+        console.log("✅ Aset, dependensi, dan prediktor sudah dimuat/inisialisasi. Menggunakan cache.");
         return;
     }
 
+    console.log("🚀 Memuat aset, mengimpor dependensi, dan menginisialisasi prediktor...");
+
     try {
-        console.log("🚀 Memuat aset dari file JSON...");
+        // Path disesuaikan jika diperlukan. Asumsi: api/index.js di folder api, model_assets di root.
+        const assetsPath = path.join(__dirname, '..', 'model_assets'); // Sesuaikan path
 
-        // Path disesuaikan jika diperlukan. Saat ini diasumsikan model_assets ada di root.
-        const assetsPath = path.join(__dirname, '..', 'model_assets');
+        // Baca aset secara ASINKRON
+        const legalitasDataRaw = await fs.readFile(path.join(assetsPath, 'legalitas_data.json'), 'utf8');
+        const legalitasData = JSON.parse(legalitasDataRaw);
+        assetsAndPredictor.legalCompaniesSet = new Set(legalitasData.legal_companies);
+        assetsAndPredictor.ilegalDevelopersSet = new Set(legalitasData.ilegal_developers);
+        assetsAndPredictor.sentimentMap = { 0: 'Negatif', 1: 'Netral', 2: 'Positif' }; // Dipindahkan dari global scope server.js
 
-        const [
-            legalitasData,
-            modelParams,
-            normalizationDict,
-            tfidfVocab,
-            tfidfIdfWeights
-        ] = await Promise.all([
-            fs.readFile(path.join(assetsPath, 'legalitas_data.json'), 'utf-8'),
-            fs.readFile(path.join(assetsPath, 'model_params.json'), 'utf-8'),
-            fs.readFile(path.join(assetsPath, 'normalization_dict.json'), 'utf-8'),
-            fs.readFile(path.join(assetsPath, 'tfidf_vocabulary.json'), 'utf-8'),
-            fs.readFile(path.join(assetsPath, 'tfidf_idf_weights.json'), 'utf-8'),
-        ]);
+        console.log("✅ Aset berhasil dimuat.");
 
-        assets.legal_companies_set = new Set(JSON.parse(legalitasData).legal_companies);
-        assets.ilegal_developers_set = new Set(JSON.parse(legalitasData).ilegal_developers);
-        assets.model_params = JSON.parse(modelParams);
-        assets.normalization_dict = JSON.parse(normalizationDict);
-        assets.tfidf_vocab = JSON.parse(tfidfVocab);
-        assets.tfidf_idf_weights = JSON.parse(tfidfIdfWeights);
+        // IMPORT DINAMIS google-play-scraper
+        gplayModule = await import('google-play-scraper');
+        console.log("✅ Modul google-play-scraper berhasil diimpor dinamis.");
 
-        console.log("✅ Semua aset berhasil dimuat.");
+        // Inisialisasi Prediktor
+        const predictor = new SentimentPredictor();
+        await predictor.loadModel(); // Asumsikan loadModel ada di SentimentPredictor
+        assetsAndPredictor.predictor = predictor;
+        console.log("✅ Prediktor berhasil diinisialisasi.");
+
     } catch (error) {
-        console.error("❌ Gagal memuat aset penting!", error);
-         // Di serverless, jangan process.exit, lempar error agar Vercel menanganinya
-        throw new Error("Failed to load essential assets: " + error.message);
+        console.error("❌ Gagal menginisialisasi!", error);
+        throw new Error("Failed to initialize essential components: " + error.message);
     }
 };
 
-/**
- * Fungsi untuk membersihkan teks.
- */
-const cleanText = (text) => {
-    let newText = String(text).toLowerCase();
-    newText = newText.replace(/\d+/g, '');
-    newText = newText.replace(/[^\w\s]/g, '');
-    newText = newText.replace(/\s+/g, ' ').trim();
-    return newText;
-};
+// Pindahkan fungsi analyzeApp dan generateRecommendation dari server.js ke sini
+function generateRecommendation(appData) {
+    const { legal_status, perc_positif, perc_negatif, total_reviews } = appData;
 
-/**
- * Fungsi untuk menormalisasi kata slang.
- */
-const normalizeSlang = (text, normalizationDict) => {
-    if (!text) return '';
-    const tokens = text.split(' ');
-    const normalizedTokens = tokens.map(token => normalizationDict[token] || token);
-    return normalizedTokens.join(' ');
-};
-
-/**
- * Melakukan transformasi TF-IDF secara manual.
- */
-const transformTfidf = (texts, vocab, idfWeights) => {
-    // Ukuran vocabulary menentukan jumlah fitur
-    const vocabSize = Object.keys(vocab).length;
-    const tfidfMatrix = [];
-
-    for (const text of texts) {
-        const featureVector = new Array(vocabSize).fill(0);
-        if (!text) {
-            tfidfMatrix.push(featureVector);
-            continue;
-        }
-
-        const tokens = text.split(' ');
-        const termCounts = {};
-        let tokenCount = 0;
-
-        for (const token of tokens) {
-            if (vocab[token] !== undefined) {
-                termCounts[token] = (termCounts[token] || 0) + 1;
-                tokenCount++;
-            }
-        }
-
-        if (tokenCount > 0) {
-            for (const term in termCounts) {
-                const termIndex = vocab[term];
-                const tf = termCounts[term] / tokenCount;
-                // Jika kata tidak ada di IDF weights, IDF-nya dianggap 1 (tidak mengubah TF)
-                const idf = idfWeights[term] || 1;
-                featureVector[termIndex] = tf * idf;
-            }
-        }
-        tfidfMatrix.push(featureVector);
+    if (legal_status === 'ilegal') {
+        return "Sangat Tidak Direkomendasikan (Terindikasi Ilegal oleh OJK)";
     }
-    return tfidfMatrix;
-};
-
-/**
- * Melakukan prediksi dengan model Logistic Regression.
- */
-const predict = (featuresMatrix) => {
-     // Pastikan assets.model_params sudah dimuat
-    const { coefficients, intercepts, classes } = assets.model_params;
-    const predictions = [];
-
-    for (const features of featuresMatrix) {
-        let maxScore = -Infinity;
-        let predictedClass = classes[0];
-
-        for (let i = 0; i < classes.length; i++) {
-            const coef = coefficients[i];
-            const intercept = intercepts[i];
-
-            let score = intercept;
-            // Dot product
-            for(let j = 0; j < features.length; j++) {
-                score += features[j] * coef[j];
-            }
-
-            if (score > maxScore) {
-                maxScore = score;
-                predictedClass = classes[i];
-            }
+    if (legal_status === 'unknown') {
+        if (total_reviews > 0 && perc_positif > 60 && perc_negatif < 25) {
+             return "Risiko Tinggi: Direkomendasikan berdasarkan sentimen, tetapi legalitas tidak terverifikasi.";
         }
-        predictions.push(predictedClass);
+        return "Risiko Tinggi (Legalitas Tidak Terverifikasi)";
     }
-    return predictions;
-};
 
-/**
- * Menerapkan logika rekomendasi.
- */
-const generateRecommendation = (row) => {
-    if (row.legal_status === 'ilegal' || row.legal_status === 'unknown') {
-        return "Tidak Direkomendasikan (Status Legalitas Tidak Pasti/Ilegal)";
-    }
-    if (row.legal_status === 'legal') {
-        if (row.total_reviews === 0) {
-            return "Pertimbangkan dengan Hati-hati (Tidak Ada Ulasan)";
+    if (legal_status === 'legal') {
+        if (total_reviews === 0) {
+            return "Pertimbangkan dengan Hati-hati (Tidak Ada Ulasan untuk Dianalisis)";
         }
-        if (row.perc_positif > 60 && row.perc_negatif < 25) {
+        if (perc_positif > 60 && perc_negatif < 25) {
             return "Direkomendasikan";
         }
-        if (row.perc_negatif > 40) {
+        if (perc_negatif > 40) {
             return "Tidak Direkomendasikan (Sentimen Negatif Tinggi)";
         }
         return "Pertimbangkan dengan Hati-hati";
     }
+
     return "Tidak Dapat Ditentukan";
-};
+}
 
 
-// Variabel untuk menyimpan instance server Hapi setelah inisialisasi pertama
-let hapiServerInstance = null;
-
-/**
- * Fungsi untuk membuat atau mendapatkan instance server Hapi.
- * Dipanggil oleh handler utama Vercel.
- */
-const createServer = async () => {
-    // Jika server sudah dibuat, gunakan instance yang ada (penting untuk re-use instance function)
-    if (hapiServerInstance) {
-        console.log("✅ Menggunakan instance server Hapi yang sudah ada.");
-        return hapiServerInstance;
+// Fungsi analyzeApp diadaptasi
+async function analyzeApp(appName, predictor, legalCompaniesSet, ilegalDevelopersSet, sentimentMap) {
+    let appInfo;
+    try {
+        // Gunakan gplayModule yang sudah diimport dinamis
+        const searchResults = await gplayModule.default.search({ term: appName, num: 1, lang: 'id', country: 'id' });
+        if (!searchResults || searchResults.length === 0) {
+            // Gunakan NotFoundError dari gplayModule jika perlu
+            const { NotFoundError } = gplayModule.default;
+             throw new NotFoundError(`Aplikasi '${appName}' tidak ditemukan di Play Store.`); // Lempar error 404
+        }
+        appInfo = searchResults[0];
+    } catch (e) {
+        // Tangani NotFoundError secara spesifik di catch handler route
+        console.error(`Gagal mencari aplikasi '${appName}':`, e.message);
+         // Lempar error untuk ditangani di handler route
+        throw e;
     }
 
-    await loadAssets(); // Pastikan aset dimuat sebelum membuat server
+    const developerNameClean = appInfo.developer
+        .trim()
+        .toLowerCase()
+        .replace(/[.,]/g, '')
+        .replace(/\s\s+/g, ' ');
+
+    let legal_status = 'unknown';
+    if (legalCompaniesSet.has(developerNameClean)) {
+        legal_status = 'legal';
+    } else if (ilegalDevelopersSet.has(developerNameClean)) {
+        legal_status = 'ilegal';
+    }
+
+    let reviewData;
+    try {
+        // Gunakan gplayModule
+        reviewData = await gplayModule.default.reviews({
+            appId: appInfo.appId,
+            sort: gplayModule.default.sort.NEWEST, // Gunakan sort dari gplayModule
+            num: 100,
+            lang: 'id',
+            country: 'id'
+        });
+    } catch (e) {
+        console.error(`Gagal mengambil ulasan untuk ${appInfo.appId}:`, e.message);
+        reviewData = { data: [] }; // Lanjutkan meskipun gagal ambil ulasan
+    }
+
+    const reviewTexts = reviewData.data.map(r => r.text);
+
+    let sentimentCounts = { Negatif: 0, Netral: 0, Positif: 0 };
+    let totalReviewsAnalyzed = 0;
+
+    if (reviewTexts.length > 0) {
+        reviewTexts.forEach(review => {
+            const processedText = preprocessText(review);
+            if (processedText) {
+                const vector = vectorizeText(processedText);
+                 // Gunakan prediktor yang sudah diinisialisasi
+                const predictionIndex = predictor.predict(vector);
+                const sentiment = sentimentMap[predictionIndex];
+                sentimentCounts[sentiment]++;
+            }
+        });
+        totalReviewsAnalyzed = Object.values(sentimentCounts).reduce((a, b) => a + b, 0);
+    }
+
+    const perc_positif = (sentimentCounts.Positif / totalReviewsAnalyzed) * 100 || 0;
+    const perc_negatif = (sentimentCounts.Negatif / totalReviewsAnalyzed) * 100 || 0;
+    const perc_netral = (sentimentCounts.Netral / totalReviewsAnalyzed) * 100 || 0;
+
+    const recommendationData = {
+        legal_status,
+        perc_positif,
+        perc_negatif,
+        total_reviews: totalReviewsAnalyzed
+    };
+    const finalRecommendation = generateRecommendation(recommendationData);
+
+    return {
+        aplikasi: appInfo.title,
+        developer: appInfo.developer,
+        status_legalitas: legal_status,
+        rating_playstore: appInfo.scoreText,
+        rekomendasi: finalRecommendation,
+        detail_analisis: {
+            total_ulasan_dianalisis: totalReviewsAnalyzed,
+            sentimen_positif: `${perc_positif.toFixed(1)}%`,
+            sentimen_negatif: `${perc_negatif.toFixed(1)}%`,
+            sentimen_netral: `${perc_netral.toFixed(1)}%`,
+        }
+    };
+}
+
+
+// --- Inisialisasi Server Hapi untuk Serverless ---
+// Kita hanya mendefinisikan server dan routes, tidak menjalankannya dengan .start()
+const createServerForVercel = async () => {
+    // Jika server sudah dibuat, gunakan instance yang ada
+     if (hapiServerInstance) {
+         console.log("✅ Menggunakan instance server Hapi yang sudah ada (untuk Vercel).");
+         return hapiServerInstance;
+     }
+
+    // Panggil fungsi inisialisasi komponen
+    await initialize();
 
     const server = Hapi.server({
-        // Di Vercel, port dan host akan diatur oleh environment Vercel.
-        // HAPI akan secara otomatis menggunakan port yang disediakan jika berjalan di fungsi serverless.
+        // Port dan host akan diatur oleh Vercel
         port: process.env.PORT,
-        host: process.env.HOST
-    });
-
-    // Route untuk root path di `/api/` (karena file ada di folder api)
-    server.route({
-        method: 'GET',
-        path: '/',
-        handler: (request, h) => {
-            return {
-                message: "Selamat datang di API Rekomendasi Aplikasi Pinjol (via Vercel).",
-                status: "ok",
-                // Path untuk route analyze akan menjadi `/api/analyze`
-                docs_url: "/api/analyze?app_name=nama_aplikasi"
-            };
+        host: process.env.HOST,
+        routes: {
+            cors: true, // Atur CORS sesuai kebutuhan Anda
+            // Tidak perlu konfigurasi files: relativeTo di sini, Vercel yang melayani statis
         }
     });
 
-    // Route untuk analyze path di `/api/analyze`
+    // Tidak perlu server.register(Inert) di sini, Vercel yang melayani statis
+
+    // Hapus route untuk melayani file statis /param*
+    // server.route({ ... });
+
+    // Route untuk analisis di `/api/analisis`
     server.route({
         method: 'GET',
-        path: '/analyze',
+        path: '/analisis', // Path relatif di dalam folder api (akan menjadi /api/analisis)
         handler: async (request, h) => {
-            const { app_name } = request.query;
-            if (!app_name) {
-                return h.response({ error: "Parameter \'app_name\' tidak boleh kosong." }).code(400);
-            }
-
             try {
-                // 1. Scrape Play Store
-                const searchResults = await gplay.search({ term: app_name, num: 1, lang: 'id', country: 'id' });
+                const { app_name } = request.query;
 
-                if (!searchResults.length) {
-                    return h.response({ error: `Aplikasi \'${app_name}\' tidak ditemukan.` }).code(404);
+                if (!app_name || typeof app_name !== 'string') {
+                    return h.response({ error: 'Query parameter "app_name" dibutuhkan dan harus berupa string.' }).code(400);
                 }
 
-                const details = await gplay.app({ appId: searchResults[0].appId, lang: 'id', country: 'id' });
+                console.log(`🔍 Menganalisis aplikasi: "${app_name}"`);
 
-                // 2. Cek Legalitas
-                const rawDeveloper = details.developer || '';
-                const developer_clean = rawDeveloper
-                    .toLowerCase()
-                    .replace(/[.,]/g, '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
+                 // Panggil analyzeApp dengan komponen yang sudah diinisialisasi
+                const result = await analyzeApp(
+                    app_name,
+                    assetsAndPredictor.predictor,
+                    assetsAndPredictor.legalCompaniesSet,
+                    assetsAndPredictor.ilegalDevelopersSet,
+                    assetsAndPredictor.sentimentMap
+                );
 
-                let legal_status = 'unknown';
-                // Pastikan assets.legal_companies_set dan assets.ilegal_developers_set sudah dimuat
-                if (assets.legal_companies_set.has(developer_clean)) {
-                    legal_status = 'legal';
-                } else if (assets.ilegal_developers_set.has(developer_clean)) {
-                    legal_status = 'ilegal';
+                // Tangani error 404 dari analyzeApp
+                if (result.error) {
+                     return h.response({ error: result.error }).code(404);
                 }
 
-                // 3. Ambil & Proses Ulasan
-                let perc_pos = 0, perc_neg = 0, perc_neu = 0, total_reviews_analyzed = 0, sentiment_distribution = {};
-                 // Ambil 100 ulasan terbaru
-                const reviewData = await gplay.reviews({ appId: details.appId, lang: 'id', country: 'id', sort: gplay.sort.NEWEST, num: 100 });
-
-                if (reviewData.data && reviewData.data.length > 0) {
-                    const reviewTexts = reviewData.data.map(r => r.text);
-
-                    const preprocessedTexts = reviewTexts.map(text => {
-                        const cleaned = cleanText(text);
-                         // Pastikan assets.normalization_dict sudah dimuat
-                        return normalizeSlang(cleaned, assets.normalization_dict);
-                    });
-
-                     // Pastikan assets.tfidf_vocab dan assets.tfidf_idf_weights sudah dimuat
-                    const tfidfFeatures = transformTfidf(preprocessedTexts, assets.tfidf_vocab, assets.tfidf_idf_weights);
-                     // Pastikan assets.model_params sudah dimuat
-                    const predictions = predict(tfidfFeatures);
-
-                    const sentimentCounts = predictions.reduce((acc, val) => {
-                        acc[val] = (acc[val] || 0) + 1;
-                        return acc;
-                    }, {});
-
-                    total_reviews_analyzed = predictions.length;
-                    if(total_reviews_analyzed > 0) {
-                        perc_pos = ((sentimentCounts[2] || 0) / total_reviews_analyzed) * 100;
-                        perc_neg = ((sentimentCounts[0] || 0) / total_reviews_analyzed) * 100;
-                        perc_neu = ((sentimentCounts[1] || 0) / total_reviews_analyzed) * 100;
-                    }
-                    sentiment_distribution = {"Positif": sentimentCounts[2] || 0, "Negatif": sentimentCounts[0] || 0, "Netral": sentimentCounts[1] || 0};
-                }
-
-                // 4. Buat Rekomendasi
-                const recommendationData = {
-                    legal_status, total_reviews: total_reviews_analyzed,
-                    perc_positif: parseFloat(perc_pos.toFixed(2)), // Format ke 2 desimal
-                    perc_negatif: parseFloat(perc_neg.toFixed(2)), // Format ke 2 desimal
-                    avg_rating: details.score
-                };
-                const recommendation_text = generateRecommendation(recommendationData);
-
-                // 5. Kembalikan Hasil
-                return h.response({
-                    requested_app_name: app_name,
-                    app_details: {
-                        title: details.title, appId: details.appId, developer: details.developer,
-                        score: details.score, installs: details.installs,
-                        summary: details.summary, url: details.url,
-                    },
-                    analysis_result: {
-                        legal_status, reviews_analyzed: total_reviews_analyzed,
-                        sentiment_percentage: {
-                            positive: parseFloat(perc_pos.toFixed(2)),
-                            negative: parseFloat(perc_neg.toFixed(2)),
-                            neutral: parseFloat(perc_neu.toFixed(2)),
-                        },
-                        sentiment_count: sentiment_distribution, recommendation: recommendation_text
-                    }
-                }).code(200);
+                return h.response(result).code(200);
 
             } catch (error) {
-                console.error("Error in /analyze handler:", error);
-                 // Tangani NotFoundError dari google-play-scraper secara spesifik
-                 if (error instanceof NotFoundError || (error.message && error.message.includes('404'))) {
-                     return h.response({ error: `Aplikasi atau detailnya tidak ditemukan di Google Play Store.` }).code(404);
+                console.error('Error during analysis handler:', error);
+                 // Tangani NotFoundError secara spesifik
+                 const { NotFoundError } = gplayModule.default;
+                 if (error instanceof NotFoundError) {
+                      return h.response({ error: error.message }).code(404); // Kirim pesan error dari NotFoundError
                  }
-                return h.response({ error: "Terjadi kesalahan internal saat memproses permintaan." }).code(500);
+                 // Tangani error lain
+                return h.response({ error: 'An internal server error occurred.' }).code(500);
             }
         }
     });
 
-     // Simpan instance server untuk digunakan kembali
-    hapiServerInstance = server;
+    // Simpan instance server untuk digunakan kembali
+     hapiServerInstance = server;
 
-    // Kembalikan instance server Hapi
     return server;
 };
 
-/**
- * Fungsi handler utama untuk Vercel Serverless Function.
- * Vercel akan memanggil fungsi ini saat ada request ke /api/*
- */
+// --- Handler Utama untuk Vercel Serverless Function ---
+// Vercel akan memanggil fungsi ini
 module.exports = async (req, res) => {
     try {
-        // Buat atau gunakan instance server Hapi
-        const server = await createServer();
+        // Buat atau dapatkan instance server Hapi
+        const server = await createServerForVercel();
 
-        // Gunakan listener server Hapi untuk menangani request
-        // Hapi akan membaca request dari `req` dan menulis response ke `res`
+        // Gunakan listener server Hapi untuk menangani request Vercel
         await server.listener(req, res);
 
     } catch (error) {
-         console.error("Error in Vercel handler:", error);
-         // Kirim response error jika ada masalah saat membuat server atau handling request
-         if (!res.headersSent) {
-             res.statusCode = 500;
-             res.setHeader('Content-Type', 'application/json');
-             res.end(JSON.stringify({ error: "Internal Server Error during request processing." }));
-         }
+        console.error("Error in Vercel handler:", error);
+        // Kirim response error jika ada masalah di luar handler route
+        if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: "Internal Server Error during function execution." }));
+        }
     }
 };
