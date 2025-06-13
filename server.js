@@ -1,13 +1,19 @@
-// server.js (Final v7 - Perbaikan pencocokan legalitas & jumlah ulasan)
+import Hapi from '@hapi/hapi';
+import Inert from '@hapi/inert';
+import { preprocessText } from './preprocessing.js';
+import { vectorizeText } from './tfidf.js';
+import { SentimentPredictor } from './inference.js';
+// --- FIX START ---
+// Impor seluruh default export ke dalam satu objek bernama 'gplay'
+import gplay from 'google-play-scraper';
+// --- FIX END ---
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const Hapi = require('@hapi/hapi');
-const Inert = require('@hapi/inert');
-const { preprocessText } = require('./preprocessing');
-const { vectorizeText } = require('./tfidf');
-const { SentimentPredictor } = require('./inference');
-const gplay = await import('google-play-scraper');
-const fs = require('fs');
-const path = require('path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 
 const legalitasData = JSON.parse(fs.readFileSync(path.join(__dirname, 'model_assets', 'legalitas_data.json'), 'utf8'));
 const legalCompaniesSet = new Set(legalitasData.legal_companies);
@@ -23,7 +29,7 @@ function generateRecommendation(appData) {
     }
     if (legal_status === 'unknown') {
         if (total_reviews > 0 && perc_positif > 60 && perc_negatif < 25) {
-             return "Risiko Tinggi: Direkomendasikan berdasarkan sentimen, tetapi legalitas tidak terverifikasi.";
+            return "Risiko Tinggi: Direkomendasikan berdasarkan sentimen, tetapi legalitas tidak terverifikasi.";
         }
         return "Risiko Tinggi (Legalitas Tidak Terverifikasi)";
     }
@@ -47,8 +53,8 @@ function generateRecommendation(appData) {
 async function analyzeApp(appName, predictor) {
     let appInfo;
     try {
-        const gplay = await import('google-play-scraper');
-        const searchResults = await gplay.default.search({ term: appName, num: 1, lang: 'id', country: 'id' });
+        // --- FIX: Gunakan prefix gplay. ---
+        const searchResults = await gplay.search({ term: appName, num: 1, lang: 'id', country: 'id' });
         if (!searchResults || searchResults.length === 0) {
             return { error: `Aplikasi '${appName}' tidak ditemukan di Play Store.` };
         }
@@ -57,12 +63,11 @@ async function analyzeApp(appName, predictor) {
         return { error: `Gagal mencari aplikasi: ${e.message}` };
     }
 
-    // PERBAIKAN 1: Hapus titik dan koma dari nama developer
     const developerNameClean = appInfo.developer
         .trim()
         .toLowerCase()
-        .replace(/[.,]/g, '') // Menghapus . dan ,
-        .replace(/\s\s+/g, ' '); // Mengganti spasi ganda menjadi tunggal
+        .replace(/[.,]/g, '')
+        .replace(/\s\s+/g, ' ');
 
     let legal_status = 'unknown';
     if (legalCompaniesSet.has(developerNameClean)) {
@@ -73,9 +78,11 @@ async function analyzeApp(appName, predictor) {
     
     let reviewData;
     try {
-        reviewData = await gplay.default.reviews({
+        // --- FIX: Gunakan prefix gplay. ---
+        reviewData = await gplay.reviews({
             appId: appInfo.appId,
-            sort: gplay.default.sort.NEWEST,
+            // --- FIX: Gunakan prefix gplay. ---
+            sort: gplay.sort.NEWEST, 
             num: 100, 
             lang: 'id',
             country: 'id'
@@ -132,8 +139,8 @@ async function analyzeApp(appName, predictor) {
 // --- Inisialisasi Server Hapi ---
 const init = async () => {
     const server = Hapi.server({
-        port: process.env.PORT || 3000, // Gunakan port dari environment, atau 3000 jika tidak ada
-        host: '0.0.0.0', // Terima koneksi dari mana saja (penting untuk container)
+        port: process.env.PORT || 3000,
+        host: '0.0.0.0',
         routes: { 
             cors: true,
             files: {
@@ -147,15 +154,14 @@ const init = async () => {
     const predictor = new SentimentPredictor();
     await predictor.loadModel();
 
-
     server.route({
         method: 'GET',
-        path: '/{param*}', 
+        path: '/{param*}',
         handler: {
             directory: {
-                path: '.',      
+                path: '.',
                 redirectToSlash: true,
-                index: true,    
+                index: true,
             }
         }
     });

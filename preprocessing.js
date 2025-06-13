@@ -1,10 +1,17 @@
-// preprocessing.js
+import pkg from 'natural';
+const { StemmerId } = pkg;
+import fs from 'fs';
+import path from 'path';
+// --- FIX START ---
+import { fileURLToPath } from 'url';
 
-const { StemmerId } = require('natural');
-const fs = require('fs');
-const path = require('path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// --- FIX END ---
+
 
 // --- 1. Muat Kamus dan Stopwords ---
+// This line will now work correctly
 const normalizationDict = JSON.parse(fs.readFileSync(path.join(__dirname, 'model_assets', 'normalization_dict.json'), 'utf8'));
 
 // Daftar stopwords Bahasa Indonesia (bisa ditambah/dikurangi)
@@ -33,7 +40,7 @@ function normalizeSlang(tokens) {
  * @param {string} text - Teks ulasan mentah.
  * @returns {string} Teks yang sudah bersih dan siap untuk di-vektorisasi.
  */
-function preprocessText(text) {
+export function preprocessText(text) {
     if (!text) return '';
 
     // 1. Lowercasing
@@ -65,5 +72,3 @@ function preprocessText(text) {
     // 9. Gabungkan kembali menjadi string
     return tokens.join(' ');
 }
-
-module.exports = { preprocessText };

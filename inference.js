@@ -1,10 +1,15 @@
-// inference.js
+import * as tf from '@tensorflow/tfjs';
+import fs from 'fs';
+import path from 'path';
+// --- FIX START ---
+import { fileURLToPath } from 'url';
 
-const tf = require('@tensorflow/tfjs');
-const fs = require('fs');
-const path = require('path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// --- FIX END ---
 
-class SentimentPredictor {
+
+export class SentimentPredictor {
     constructor() {
         this.modelParams = null;
         this.weights = null;
@@ -15,6 +20,7 @@ class SentimentPredictor {
      * Memuat parameter model dari file JSON.
      */
     async loadModel() {
+        // This line will now work correctly
         const paramsPath = path.join(__dirname, 'model_assets', 'model_params.json');
         const paramsJson = JSON.parse(fs.readFileSync(paramsPath, 'utf8'));
         this.modelParams = paramsJson;
@@ -54,5 +60,3 @@ class SentimentPredictor {
         });
     }
 }
-
-module.exports = { SentimentPredictor };

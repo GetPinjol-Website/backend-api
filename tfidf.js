@@ -1,9 +1,15 @@
-// tfidf.js
+import fs from 'fs';
+import path from 'path';
+// --- FIX START ---
+import { fileURLToPath } from 'url';
 
-const fs = require('fs');
-const path = require('path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// --- FIX END ---
+
 
 // --- Muat Vocabulary dan Bobot IDF ---
+// These lines will now work correctly
 const vocabulary = JSON.parse(fs.readFileSync(path.join(__dirname, 'model_assets', 'tfidf_vocabulary.json'), 'utf8'));
 const idfWeights = JSON.parse(fs.readFileSync(path.join(__dirname, 'model_assets', 'tfidf_idf_weights.json'), 'utf8'));
 const vocabSize = Object.keys(vocabulary).length;
@@ -26,7 +32,7 @@ function calculateTF(tokens) {
  * @param {string} processedText - Teks yang sudah melalui preprocessText.
  * @returns {number[]} Vektor numerik TF-IDF.
  */
-function vectorizeText(processedText) {
+export function vectorizeText(processedText) {
     const tokens = processedText.split(' ').filter(Boolean);
     const numTokens = tokens.length;
     if (numTokens === 0) {
@@ -40,7 +46,7 @@ function vectorizeText(processedText) {
 
     // Hitung skor TF-IDF untuk setiap kata dalam vocabulary
     termFrequencies.forEach((freq, term) => {
-        if (vocabulary.hasOwnProperty(term)) {
+        if (Object.hasOwn(vocabulary, term)) {
             const vocabIndex = vocabulary[term];
             const tf = freq / numTokens;
             const idf = idfWeights[term] || 0; // Ambil IDF berdasarkan kata
@@ -57,5 +63,3 @@ function vectorizeText(processedText) {
     
     return vector;
 }
-
-module.exports = { vectorizeText };

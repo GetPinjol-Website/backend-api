@@ -1,4 +1,4 @@
-const gplay = require('google-play-scraper');
+import gplay from 'google-play-scraper';
 
 // Cetak seluruh objek gplay untuk melihat apa isinya
 console.log('--- Objek gplay yang diimpor ---');
